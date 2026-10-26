@@ -15,9 +15,12 @@ const SMALL_SCREEN_MAX_WIDTH = 820
 const SCROLL_VIEWPORTS = 6
 // How quickly the picture catches up with the scroll position (0-1 per frame
 // at 60fps). Lower = floatier/more cinematic, higher = more direct.
-const FOLLOW = 0.1
+const FOLLOW = 0.14
 // Parallel image downloads while preloading.
 const LOAD_CONCURRENCY = 8
+// When scrolling stops for this long (ms), the picture settles on one exact
+// frame so there is never a half-blended (blurry) image at rest.
+const SETTLE_AFTER_MS = 90
 /* ---------------------------------------------------------------------- */
 
 const frameUrl = (dir, i) => `${dir}/frame_${String(i + 1).padStart(4, '0')}.webp`
@@ -47,14 +50,18 @@ function App() {
     let targetFrame = 0     // where scroll says we should be (float)
     let currentFrame = 0    // where we are drawing (float, eased)
     let lastDrawn = -1
+    let lastTargetChange = 0
+    let frameW = 1600       // natural width of the loaded frames
     let cssW = 0
     let cssH = 0
 
     /* --- drawing ------------------------------------------------------ */
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
       cssW = canvas.clientWidth
       cssH = canvas.clientHeight
+      // Never render more pixels than the source frames contain: extra
+      // resolution costs a lot of GPU time every frame and adds no detail.
+      const dpr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, 2, frameW / Math.max(cssW, 1)))
       canvas.width = Math.round(cssW * dpr)
       canvas.height = Math.round(cssH * dpr)
       lastDrawn = -1
@@ -74,9 +81,9 @@ function App() {
     const drawCover = (img, alpha) => {
       const cw = canvas.width
       const ch = canvas.height
-      const scale = Math.max(cw / img.naturalWidth, ch / img.naturalHeight)
-      const w = img.naturalWidth * scale
-      const h = img.naturalHeight * scale
+      const scale = Math.max(cw / (img.naturalWidth || img.width), ch / (img.naturalHeight || img.height))
+      const w = (img.naturalWidth || img.width) * scale
+      const h = (img.naturalHeight || img.height) * scale
       ctx.globalAlpha = alpha
       ctx.drawImage(img, (cw - w) / 2, (ch - h) / 2, w, h)
     }
@@ -93,8 +100,11 @@ function App() {
       const imgA = nearest(a)
       if (!imgA) return
       lastDrawn = clamped
+      // Opaque base layer, then fade the next frame over it.
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'low'
       drawCover(imgA, 1)
-      if (mix > 0.01 && b !== a) {
+      if (mix > 0.04 && b !== a) {
         const imgB = nearest(b)
         if (imgB && imgB !== imgA) drawCover(imgB, mix)
       }
@@ -102,8 +112,10 @@ function App() {
     }
 
     const setTargetFromProgress = (p) => {
-      targetFrame = Math.min(Math.max(p, 0), 1) * (FRAME_COUNT - 1)
-      if (reducedMotion) draw(targetFrame)
+      const next = Math.min(Math.max(p, 0), 1) * (FRAME_COUNT - 1)
+      if (Math.abs(next - targetFrame) > 0.001) lastTargetChange = performance.now()
+      targetFrame = next
+      if (reducedMotion) draw(Math.round(targetFrame))
     }
 
     /* --- preloading --------------------------------------------------- */
@@ -113,12 +125,19 @@ function App() {
         img.decoding = 'async'
         img.onload = () => {
           // decode() makes sure the bitmap is ready so drawing never janks
-          const done = () => {
-            images[i] = img
+          // ImageBitmap = fully decoded, GPU-friendly pixels; drawing it is cheap.
+          const done = (bmp) => {
+            images[i] = bmp || img
+            if (i === 0) frameW = img.naturalWidth || frameW
             resolve(true)
           }
-          if (img.decode) img.decode().then(done, done)
-          else done()
+          if (window.createImageBitmap) {
+            window.createImageBitmap(img).then(done, () => done(null))
+          } else if (img.decode) {
+            img.decode().then(() => done(null), () => done(null))
+          } else {
+            done(null)
+          }
         }
         img.onerror = () => resolve(false)
         img.src = frameUrl(dir, i)
@@ -179,8 +198,12 @@ function App() {
         lenis.raf(time * 1000)
         // Frame-rate independent easing toward the scroll target.
         const k = 1 - Math.pow(1 - FOLLOW, (deltaTime || 16.7) / 16.7)
-        currentFrame += (targetFrame - currentFrame) * k
-        if (Math.abs(targetFrame - currentFrame) < 0.01) currentFrame = targetFrame
+        // Once scrolling has stopped, aim for a whole frame number so the
+        // image rests sharp instead of as a blend of two frames.
+        const resting = performance.now() - lastTargetChange > SETTLE_AFTER_MS
+        const goal = resting ? Math.round(targetFrame) : targetFrame
+        currentFrame += (goal - currentFrame) * k
+        if (Math.abs(goal - currentFrame) < 0.01) currentFrame = goal
         draw(currentFrame)
       }
       gsap.ticker.add(tick)
