@@ -1,0 +1,18 @@
+@import "tailwindcss";
+@import "lenis/dist/lenis.css";
+
+:root {
+  font-family: Arial, Helvetica, sans-serif;
+  color: #292820;
+  background: #e9e5dc;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+}
+
+* { box-sizing: border-box; }
+html { min-width: 320px; scroll-behavior: auto; }
+body { margin: 0; min-width: 320px; width: 100%; overflow-x: clip; }
+button, a { -webkit-tap-highlight-color: transparent; }
